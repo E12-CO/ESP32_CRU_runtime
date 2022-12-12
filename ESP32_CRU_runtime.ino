@@ -163,24 +163,18 @@ void loop() {
 
     case 1:// Command parser.
       Serial.println("main_fsm : 1");
-      // Enter Special mode
-      if (allString[0] == '1') {
-        main_fsm = 4;
-        break;
-      }
+      M1pw = ((allString[4] - '0') * 100) + ((allString[5] - '0') * 10) + (allString[6] - '0') ;
+      M2pw = ((allString[9] - '0') * 100) + ((allString[10] - '0') * 10) + (allString[11] - '0') ;
 
+      lastencR = (((allString[15] - '0') * 10) + (allString[16] - '0'));
+      lastencL = (((allString[17] - '0') * 10) + (allString[18] - '0'));
+      
       // Stop motor
       if (allString[1] == '0') {
         STP();
         main_fsm = 0;
         break;
       }
-
-      M1pw = ((allString[4] - '0') * 100) + ((allString[5] - '0') * 10) + (allString[6] - '0') ;
-      M2pw = ((allString[9] - '0') * 100) + ((allString[10] - '0') * 10) + (allString[11] - '0') ;
-
-      lastencR = (((allString[15] - '0') * 10) + (allString[16] - '0'));
-      lastencL = (((allString[17] - '0') * 10) + (allString[18] - '0'));
 
       //Debug
       Serial.print("M1:");
@@ -231,6 +225,12 @@ void loop() {
       }
 
       main_fsm = 2;
+
+      // Enter Special mode
+      if (allString[0] == '1') {
+        main_fsm = 4;
+        break;
+      }
 
       allString = "";// Clear command buffer
 
@@ -450,32 +450,6 @@ void loop() {
 
         case 0x00:// R : Backward, L : Backward
           Serial.println("Backward");
-          // Stop right hand motor to make the robot correct itself to right hand side
-//          if (analogRead(Lsen) > SENSOR_DETECT_STATE) {
-//            ledcWrite(M1Channel, CORRECT_SPEED);
-//            ledcWrite(M2Channel, CORRECT_SPEED);
-//            digitalWrite(in1, 0);
-//            digitalWrite(in2, 0);
-//            delay(CORRECTION_DELAY);
-//            digitalWrite(in1, 1);
-//            digitalWrite(in2, 0);
-//            ledcWrite(M1Channel, M1pw);
-//            ledcWrite(M2Channel, M2pw);
-//          }
-//
-//          // Stop left hand motor to make the robot correct itself to left hand side
-//          if (analogRead(Rsen) > SENSOR_DETECT_STATE) {
-//            ledcWrite(M1Channel, CORRECT_SPEED);
-//            ledcWrite(M2Channel, CORRECT_SPEED);
-//            digitalWrite(in3, 0);
-//            digitalWrite(in4, 0);
-//            delay(CORRECTION_DELAY);
-//            digitalWrite(in3, 1);
-//            digitalWrite(in4, 0);
-//            ledcWrite(M1Channel, M1pw);
-//            ledcWrite(M2Channel, M2pw);
-//          }
-
 
           // Right
           if (enc1.getCount() <= lastencR) {
@@ -510,9 +484,43 @@ void loop() {
 
       break;
 
-      //        case 4:// Curving
-      //
-      //        break;
+    case 4:// Curving
+      ledcWrite(M1Channel, M1pw);
+      ledcWrite(M2Channel, M2pw);
+
+      // Right
+      digitalWrite(in1, 0);
+      digitalWrite(in2, 1);
+      // Left
+      digitalWrite(in3, 0);
+      digitalWrite(in4, 1);
+
+      if (analogRead(Lsen) > SENSOR_DETECT_STATE) {
+        ledcWrite(M1Channel, CORRECT_SPEED);
+        ledcWrite(M2Channel, CORRECT_SPEED);
+        digitalWrite(in1, 0);
+        digitalWrite(in2, 0);
+        delay(CORRECTION_DELAY);
+        digitalWrite(in1, 0);
+        digitalWrite(in2, 1);
+        ledcWrite(M1Channel, M1pw);
+        ledcWrite(M2Channel, M2pw);
+      }
+
+      // Stop left hand motor to make the robot correct itself to left hand side
+      if (analogRead(Rsen) > SENSOR_DETECT_STATE) {
+        ledcWrite(M1Channel, CORRECT_SPEED);
+        ledcWrite(M2Channel, CORRECT_SPEED);
+        digitalWrite(in3, 0);
+        digitalWrite(in4, 0);
+        delay(CORRECTION_DELAY);
+        digitalWrite(in3, 0);
+        digitalWrite(in4, 1);
+        ledcWrite(M1Channel, M1pw);
+        ledcWrite(M2Channel, M2pw);
+      }
+
+      break;
   }// switch(main_fsm)
 
 }// void loop
