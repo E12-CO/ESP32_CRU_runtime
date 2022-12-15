@@ -17,7 +17,7 @@ int64_t lastencL = 0;// Store previous encoder value of Left motor
 const char* ssid = "Robotclub_KMITL_E12";
 const char* password =  "Kakorsetyor2022";
 
-String allString;
+String allString, ddtaa;
 char c;
 IPAddress local_IP(192, 168, 0, 123);
 IPAddress gateway(192, 168, 0, 1);
@@ -38,7 +38,13 @@ WiFiServer wifiServer(80);
 #define M1Channel 0
 #define M2Channel 1
 
-#define PWM_freq 100
+#define PWM_freq 10000
+
+// for left,right turning
+#define TURNING_STEPS_R 64
+#define TURNING_STEPS_L 64
+#define BRAKE_CONST  500
+#define SINGLE_STEP  256
 
 // LEDs
 #define IND1  16
@@ -49,15 +55,27 @@ WiFiServer wifiServer(80);
 // IR sensors
 #define Lsen  39
 #define Rsen  36
-#define SENSOR_DETECT_STATE 400 // GPIO state when Dectect non-white area (A.K.A outside the road).
+#define SENSOR_DETECT_SPSTATE 1690
+#define SENSOR_DETECT_STATE 3490 // GPIO state when Dectect non-white area (A.K.A outside the road).
 #define SENSOR_NORMAL_STATE 0 // GPIO state when the Robot car is still on the road.
-#define CORRECTION_DELAY 5 // How long the motor will correct the position.
-#define CORRECT_SPEED 55
+#define CORRECTION_DELAY 100 // How long the motor will correct the position.
+#define CORRECTION_SPDELAY 100
+#define CORRECT_SPEED 155
+#define CORRECT_SPSPEED 150
+
+// SW
+#define SW1 18
+#define SW2 5
 
 uint8_t M1pw = 0;
 uint8_t M2pw = 0;
+uint16_t M1ramp = 0;
+uint16_t M2ramp = 0;
 uint8_t dir = 0;
 uint8_t break_flag = 0;
+
+uint8_t exit_setup = 1;
+uint16_t ADC_Sample[2] = {0};
 
 void motorInit() {
   pinMode(in1, OUTPUT);
@@ -78,6 +96,9 @@ void GPIOsInit() {
   pinMode(IND3, OUTPUT);
   pinMode(IND4, OUTPUT);
 
+  pinMode(SW1, INPUT_PULLUP);
+  pinMode(SW2, INPUT_PULLUP);
+
   pinMode(Lsen, INPUT);
   pinMode(Rsen, INPUT);
 }
@@ -93,6 +114,7 @@ void setup() {
 
   enc0.setCount(4096);
   enc1.setCount(4096);
+
 
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {
     Serial.println("STA Failed to configure");
@@ -136,10 +158,12 @@ void loop() {
         Serial.println("Received new packet!");
         while (client.available()) {// Receive all command
           c = client.read();
-          allString += c;
+          ddtaa += c;
           //Debug
           if (c == '\n') {
+            allString = ddtaa;
             Serial.println(allString);
+            ddtaa = "";
             lastencR = 0;
             lastencL = 0;
             break_flag = 0;
@@ -168,7 +192,7 @@ void loop() {
 
       lastencR = (((allString[15] - '0') * 10) + (allString[16] - '0'));
       lastencL = (((allString[17] - '0') * 10) + (allString[18] - '0'));
-      
+
       // Stop motor
       if (allString[1] == '0') {
         STP();
@@ -188,26 +212,19 @@ void loop() {
       Serial.println(lastencL);
 
       // LED stuffs
-      if (allString[12] == '1') {
-        digitalWrite(IND2, 1);
-      }
-      else {
-        digitalWrite(IND2, 0);
-      }
+      //      if (allString[13] == '1') {
+      //        digitalWrite(IND3, 1);
+      //      }
+      //      else {
+      //        digitalWrite(IND3, 0);
+      //      }
 
-      if (allString[13] == '1') {
-        digitalWrite(IND3, 1);
-      }
-      else {
-        digitalWrite(IND3, 0);
-      }
-
-      if (allString[14] == '1') {
-        digitalWrite(IND4, 1);
-      }
-      else {
-        digitalWrite(IND4 , 0);
-      }
+      //      if (allString[14] == '1') {
+      //        digitalWrite(IND4, 1);
+      //      }
+      //      else {
+      //        digitalWrite(IND4 , 0);
+      //      }
       // End LED stuffs
 
       // parse Right motor direction
@@ -229,6 +246,30 @@ void loop() {
       // Enter Special mode
       if (allString[0] == '1') {
         main_fsm = 4;
+        ledcWrite(M1Channel, M1pw);
+        ledcWrite(M2Channel, M2pw);
+
+        // Right
+        digitalWrite(in1, 0);
+        digitalWrite(in2, 1);
+        // Left
+        digitalWrite(in3, 0);
+        digitalWrite(in4, 1);
+        break;
+      }
+
+      // Enter auto distance lock mode at orange parking spot
+      if (allString[12] == '1') {
+        main_fsm = 5;
+        ledcWrite(M1Channel, M1pw);
+        ledcWrite(M2Channel, M2pw);
+
+        // Right
+        digitalWrite(in1, 0);
+        digitalWrite(in2, 1);
+        // Left
+        digitalWrite(in3, 0);
+        digitalWrite(in4, 1);
         break;
       }
 
@@ -238,6 +279,12 @@ void loop() {
 
     case 2:// Motor control
       Serial.println("main_fsm : 2");
+      if (allString[1] == '0') {
+        STP();
+        main_fsm = 0;
+        break;
+      }
+
       // Get latest Encoder counter value
       ledcWrite(M1Channel, M1pw);
       ledcWrite(M2Channel, M2pw);
@@ -245,8 +292,8 @@ void loop() {
       // Check Bit 7 and 6 for motor direction control
       switch (dir & 0xC0) {
         case 0x80:// R : Forward, L : Backward
-          lastencR *= 1115;
-          lastencL *= 1115;
+          lastencR *= TURNING_STEPS_R;
+          lastencL *= TURNING_STEPS_L;
           lastencR = enc1.getCount() + lastencR;
           lastencL = enc0.getCount() - lastencL;
 
@@ -259,8 +306,8 @@ void loop() {
           break;
 
         case 0x40:// R : Backward, L : Forward
-          lastencR *= 1115;
-          lastencL *= 1115;
+          lastencR *= TURNING_STEPS_R;
+          lastencL *= TURNING_STEPS_L;
           lastencR = enc1.getCount() - lastencR;
           lastencL = enc0.getCount() + lastencL;
           // Right
@@ -273,8 +320,8 @@ void loop() {
 
         case 0xC0:// R : Forward, L : Forward
           // Full revolution to steps
-          lastencR *= 512;
-          lastencL *= 512;
+          lastencR *= SINGLE_STEP;
+          lastencL *= SINGLE_STEP;
           lastencR = enc1.getCount() + lastencR;
           lastencL = enc0.getCount() + lastencL;
           // Right
@@ -286,8 +333,8 @@ void loop() {
           break;
 
         case 0x00:// R : Backward, L : Backward
-          lastencR *= 512;
-          lastencL *= 512;
+          lastencR *= SINGLE_STEP;
+          lastencL *= SINGLE_STEP;
           lastencR = enc1.getCount() - lastencR;
           lastencL = enc0.getCount() - lastencL;
           // Right
@@ -312,33 +359,51 @@ void loop() {
     // WARNING : Code Flow through from fsm state 2 to state 3
 
     case 3:// Encoder stuffs
-      Serial.println("main_fsm : 3");
+      //Serial.println("main_fsm : 3");
+
+      //      if (allString[1] == '0') {
+      //        STP();
+      //        main_fsm = 0;
+      //        break;
+      //      }
+
       //delay(1);// <1000Hz PID scan rate.
       // Check Bit 7 and 6 for motor direction control
       switch (dir & 0xC0) {
         case 0x80:// R : Forward, L : Backward
-          Serial.println("Turn Left");
-          // Right
-          if (enc1.getCount() >= lastencR) {
-            digitalWrite(in1, 1);
-            digitalWrite(in2, 0);
-            ledcWrite(M1Channel, 255);
-            delayMicroseconds(200);
-            digitalWrite(in1, 0);
-            break_flag++;
-          }
+          //Serial.println("Turn Left");
+          M1ramp += 2;
+          if (M1ramp >= M1pw)
+            M1ramp = M1pw;
+          M2ramp += 2;
+          if (M2ramp >= M2pw)
+            M2ramp = M2pw;
 
+          ledcWrite(M1Channel, (uint8_t)M1ramp);
+          ledcWrite(M2Channel, (uint8_t)M2ramp);
           // Left
           if (enc0.getCount() <= lastencL) {
             digitalWrite(in4, 1);
             digitalWrite(in3, 0);
             ledcWrite(M2Channel, 255);
-            delayMicroseconds(200);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in4, 0);
             break_flag++;
           }
 
+          // Right
+          if (enc1.getCount() >= lastencR) {
+            digitalWrite(in1, 1);
+            digitalWrite(in2, 0);
+            ledcWrite(M1Channel, 255);
+            delayMicroseconds(BRAKE_CONST);
+            digitalWrite(in1, 0);
+            break_flag++;
+          }
+
           if (break_flag >= 2) {
+            M1ramp = 0;
+            M2ramp = 0;
             STP();
             break_flag = 0;
             main_fsm = 0;
@@ -350,28 +415,40 @@ void loop() {
           break;
 
         case 0x40:// R : Backward, L : Forward
-          Serial.println("Turn Right");
-          // Right
-          if (enc1.getCount() <= lastencR) {
-            digitalWrite(in2, 1);
-            digitalWrite(in1, 0);
-            ledcWrite(M1Channel, 255);
-            delayMicroseconds(200);
-            digitalWrite(in2, 0);
-            break_flag++;
-          }
+          //Serial.println("Turn Right");
+          M1ramp += 2;
+          if (M1ramp >= M1pw)
+            M1ramp = M1pw;
+          M2ramp += 2;
+          if (M2ramp >= M2pw)
+            M2ramp = M2pw;
+
+          ledcWrite(M1Channel, (uint8_t)M1ramp);
+          ledcWrite(M2Channel, (uint8_t)M2ramp);
 
           // Left
           if (enc0.getCount() >= lastencL) {
             digitalWrite(in3, 1);
             digitalWrite(in4, 0);
             ledcWrite(M2Channel, 255);
-            delayMicroseconds(200);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in3, 0);
             break_flag++;
           }
 
+          // Right
+          if (enc1.getCount() <= lastencR) {
+            digitalWrite(in2, 1);
+            digitalWrite(in1, 0);
+            ledcWrite(M1Channel, 255);
+            delayMicroseconds(BRAKE_CONST);
+            digitalWrite(in2, 0);
+            break_flag++;
+          }
+
           if (break_flag >= 2) {
+            M1ramp = 0;
+            M2ramp = 0;
             STP();
             break_flag = 0;
             main_fsm = 0;
@@ -383,30 +460,18 @@ void loop() {
           break;
 
         case 0xC0:// R : Forward, L : Forward
-          Serial.println("Forward");
+          //Serial.println("Forward");
           // Stop right hand motor to make the robot correct itself to right hand side
           if (analogRead(Lsen) > SENSOR_DETECT_STATE) {
             ledcWrite(M1Channel, CORRECT_SPEED);
-            ledcWrite(M2Channel, CORRECT_SPEED);
-            digitalWrite(in1, 0);
-            digitalWrite(in2, 0);
             delay(CORRECTION_DELAY);
-            digitalWrite(in1, 0);
-            digitalWrite(in2, 1);
             ledcWrite(M1Channel, M1pw);
-            ledcWrite(M2Channel, M2pw);
           }
 
           // Stop left hand motor to make the robot correct itself to left hand side
           if (analogRead(Rsen) > SENSOR_DETECT_STATE) {
-            ledcWrite(M1Channel, CORRECT_SPEED);
             ledcWrite(M2Channel, CORRECT_SPEED);
-            digitalWrite(in3, 0);
-            digitalWrite(in4, 0);
             delay(CORRECTION_DELAY);
-            digitalWrite(in3, 0);
-            digitalWrite(in4, 1);
-            ledcWrite(M1Channel, M1pw);
             ledcWrite(M2Channel, M2pw);
           }
 
@@ -416,7 +481,7 @@ void loop() {
             digitalWrite(in1, 1);
             digitalWrite(in2, 0);
             ledcWrite(M1Channel, 255);
-            delayMicroseconds(200);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in1, 0);
             break_flag++;
             Serial.print("Break flag:");
@@ -428,7 +493,7 @@ void loop() {
             digitalWrite(in3, 1);
             digitalWrite(in4, 0);
             ledcWrite(M2Channel, 255);
-            delayMicroseconds(200);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in3, 0);
             break_flag++;
             Serial.print("Break flag:");
@@ -444,18 +509,19 @@ void loop() {
             break;
           }
 
-          Serial.println("main_fsm : 3 end");
+          //Serial.println("main_fsm : 3 end");
 
           break;
 
         case 0x00:// R : Backward, L : Backward
-          Serial.println("Backward");
+          //Serial.println("Backward");
 
           // Right
           if (enc1.getCount() <= lastencR) {
             digitalWrite(in2, 1);
             digitalWrite(in1, 0);
             ledcWrite(M1Channel, 255);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in2, 0);
             break_flag++;
           }
@@ -465,6 +531,7 @@ void loop() {
             digitalWrite(in4, 1);
             digitalWrite(in3, 0);
             ledcWrite(M2Channel, 255);
+            delayMicroseconds(BRAKE_CONST);
             digitalWrite(in4, 0);
             break_flag++;
           }
@@ -485,42 +552,71 @@ void loop() {
       break;
 
     case 4:// Curving
-      ledcWrite(M1Channel, M1pw);
-      ledcWrite(M2Channel, M2pw);
-
-      // Right
-      digitalWrite(in1, 0);
-      digitalWrite(in2, 1);
-      // Left
-      digitalWrite(in3, 0);
-      digitalWrite(in4, 1);
-
-      if (analogRead(Lsen) > SENSOR_DETECT_STATE) {
-        ledcWrite(M1Channel, CORRECT_SPEED);
-        ledcWrite(M2Channel, CORRECT_SPEED);
-        digitalWrite(in1, 0);
-        digitalWrite(in2, 0);
-        delay(CORRECTION_DELAY);
-        digitalWrite(in1, 0);
-        digitalWrite(in2, 1);
-        ledcWrite(M1Channel, M1pw);
-        ledcWrite(M2Channel, M2pw);
-      }
+      //      if (analogRead(Lsen) > SENSOR_DETECT_SPSTATE) {
+      //        ledcWrite(M1Channel, CORRECT_SPEED);
+      //        delay(CORRECTION_DELAY);
+      //        ledcWrite(M1Channel, M1pw);
+      //
+      //        ledcWrite(M1Channel, CORRECT_SPSPEED);
+      //        ledcWrite(M2Channel, CORRECT_SPSPEED);
+      //        digitalWrite(in1, 0);
+      //        digitalWrite(in2, 0);
+      //        delay(CORRECTION_SPDELAY);
+      //        digitalWrite(in1, 0);
+      //        digitalWrite(in2, 1);
+      //        ledcWrite(M1Channel, M1pw);
+      //        ledcWrite(M2Channel, M2pw);
+      //      }
 
       // Stop left hand motor to make the robot correct itself to left hand side
-      if (analogRead(Rsen) > SENSOR_DETECT_STATE) {
-        ledcWrite(M1Channel, CORRECT_SPEED);
-        ledcWrite(M2Channel, CORRECT_SPEED);
-        digitalWrite(in3, 0);
-        digitalWrite(in4, 0);
-        delay(CORRECTION_DELAY);
-        digitalWrite(in3, 0);
-        digitalWrite(in4, 1);
-        ledcWrite(M1Channel, M1pw);
+      if (analogRead(Rsen) > SENSOR_DETECT_SPSTATE) {
+        Serial.println("Curve edge detected!");
+        ledcWrite(M2Channel, CORRECT_SPSPEED);
+        delay(CORRECTION_SPDELAY);
         ledcWrite(M2Channel, M2pw);
+        //        ledcWrite(M1Channel, CORRECT_SPSPEED);
+        //        ledcWrite(M2Channel, CORRECT_SPSPEED);
+        //        digitalWrite(in3, 0);
+        //        digitalWrite(in4, 0);
+        //        delay(CORRECTION_SPDELAY);
+        //        digitalWrite(in3, 0);
+        //        digitalWrite(in4, 1);
+        //        ledcWrite(M1Channel, M1pw);
+        //        ledcWrite(M2Channel, M2pw);
       }
 
       break;
+
+    case 5:// Distance lock for orange parking spot.
+      //digitalWrite(IND3, 1);
+      while (1) {
+        // Left
+        if (analogRead(Lsen) > SENSOR_DETECT_STATE) {
+          digitalWrite(IND3, 1);
+          STP();
+          //digitalWrite(IND3, 0);
+          break_flag = 0;
+          main_fsm = 0;
+          break;
+        }
+
+        // Right
+        if (analogRead(Rsen) > SENSOR_DETECT_STATE) {
+          digitalWrite(IND3, 1);
+          STP();
+          //digitalWrite(IND3, 0);
+          break_flag = 0;
+          main_fsm = 0;
+          break;
+        }
+      }
+      break;
+
+    case 6:// blind walk
+
+
+      break;
+
   }// switch(main_fsm)
 
 }// void loop
